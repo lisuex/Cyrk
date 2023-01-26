@@ -2,7 +2,6 @@
 #include <chrono>
 #include <deque>
 #include <thread>
-#include <latch>
 #include <iostream>
 
 #include "system.hpp"
@@ -26,14 +25,14 @@ class Chips : public Product
 
 class BurgerMachine : public Machine
 {
-    size_t burgersMade;
+    std::atomic_uint burgersMade;
     std::chrono::seconds time = std::chrono::seconds(1);
 public:
     BurgerMachine() : burgersMade(0) {}
 
     std::unique_ptr<Product> getProduct()
-    {   
-        if (burgersMade > 0) 
+    {
+        if (burgersMade > 0)
         {
             burgersMade--;
             return std::unique_ptr<Product>(new Burger());
@@ -51,7 +50,7 @@ public:
 
     void start()
     {
-        burgersMade = 10;
+        burgersMade.store(10);
     }
 
     void stop() {}
@@ -87,7 +86,7 @@ public:
     ChipsMachine() : running(false) {}
 
     std::unique_ptr<Product> getProduct()
-    {   
+    {
         if (!running) throw MachineNotWorking();
         wcount++;
         std::unique_lock<std::mutex> lock(mutex);
@@ -107,7 +106,7 @@ public:
         cond.notify_one();
     }
 
-    void start() 
+    void start()
     {
         running = true;
         thread = std::thread([this](){
@@ -126,7 +125,7 @@ public:
         });
     }
 
-    void stop() 
+    void stop()
     {
         running = false;
         thread.join();
@@ -140,27 +139,20 @@ int main() {
             {"burger", std::shared_ptr<Machine>(new BurgerMachine())},
             {"iceCream", std::shared_ptr<Machine>(new IceCreamMachine())},
             {"chips", std::shared_ptr<Machine>(new ChipsMachine())},
-        }, 
-        10, 
+        },
+        10,
         1
     };
 
-    std::latch latch(1);
-    std::latch shutdown_latch(2);
-    std::latch bad_latch(1);
-
-    auto client1 = std::jthread([&system, &latch, &shutdown_latch](){
-        latch.wait();
+    auto client1 = std::thread([&system]() {
         system.getMenu();
         auto p = system.order({"burger", "chips"});
         p->wait();
         system.collectOrder(std::move(p));
-        shutdown_latch.count_down();
         std::cout << "OK\n";
     });
 
-    auto client2 = std::jthread([&system, &latch, &shutdown_latch](){
-        latch.wait();
+    auto client2 = std::thread([&system](){
         system.getMenu();
         system.getPendingOrders();
         try {
@@ -170,11 +162,15 @@ int main() {
         } catch (const FulfillmentFailure& e) {
             std::cout << "OK\n";
         }
-        shutdown_latch.count_down();
     });
 
-    auto client3 = std::jthread([&system, &bad_latch](){
-        bad_latch.wait();
+
+    client1.join();
+    client2.join();
+
+    system.shutdown();
+
+    auto client3 = std::thread([&system](){
         system.getMenu();
         system.getPendingOrders();
         try {
@@ -185,11 +181,5 @@ int main() {
             std::cout << "OK\n";
         }
     });
-
-    latch.count_down();
-
-    shutdown_latch.wait();
-    system.shutdown();  
-    
-    bad_latch.count_down();  
+    client3.join();
 }

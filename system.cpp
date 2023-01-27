@@ -77,16 +77,18 @@ public:
 protected:
     CoasterPager(unsigned int id, std::vector<std::unique_ptr<Product>>& ready_products,
         std::mutex& is_ready_mutex, std::vector<std::string>& products, std::condition_variable& wait_function_con, 
-        std::unique_lock<std::mutex>& uniq_mutex, std::condition_variable& worker_con):
+        std::unique_lock<std::mutex>& uniq_mutex, std::condition_variable& worker_con, unsigned int worker_id):
     id(id),
     ready_products(ready_products),
     is_ready_mutex(is_ready_mutex),
     products(products),
     wait_function_con(wait_function_con),
     uniq_mutex(uniq_mutex),
-    worker_con(worker_con) {}
+    worker_con(worker_con),
+    worker_id(worker_id) {}
 
 private:
+    unsigned int worker_id;
     unsigned int id;
     std::vector<std::string>& products;
     std::mutex& is_ready_mutex; // mutex protecting concurrently checking if the products is ready
@@ -111,6 +113,9 @@ public:
             std::vector<std::string> create_menu;
             for(auto& record : machines_map) create_menu.push_back(record.first);
             this->menu = create_menu;
+            for(int i = 0; i < numberOfWorkers; i++) {
+                workers_id.push(i);
+            }
         }
 
     //TODO
@@ -143,7 +148,12 @@ public:
         }
         worker_mutex.unlock();
 
-        order_waiting.lock(); // czekaj aż ktoś Cie wpuści albo 
+        order_waiting.lock(); // czekaj aż ktoś Cie wpuści albo masz miejsce by wbić
+
+        giving_worker.lock();
+        unsigned int worker_id = workers_id.front();
+        workers_id.pop();
+        giving_worker.unlock();
 
         if(!not_waited) ordering_mutex.lock();
 
@@ -164,7 +174,7 @@ public:
 
         std::condition_variable worker_con; // worker condition var signalizing if client took his order
 
-        CoasterPager new_pager(id, ready_products, is_ready_mutex, products, wait_function_con, lock, worker_con);
+        CoasterPager new_pager(id, ready_products, is_ready_mutex, products, wait_function_con, lock, worker_con, worker_id);
 
         auto pager_ptr = std::make_unique<CoasterPager>(new_pager);
 
@@ -236,10 +246,17 @@ private:
         std::unique_lock<std::mutex> lock(mut);
 
         CoasterPager->worker_con.wait_until(lock, now + clientTimeout * 1ms); // czekanie na sygnał od klienta który odebrał zamówienie, albo na Timeout
+
+        // TODO: jeśli poprawnie odebrane zamówienie
+        workers_report[CoasterPager->worker_id].collectedOrders.push_back(CoasterPager->products);
+        // TODO: jeśli niepoprawnie odebrane to do innych rzeczy trzeba dodać 
+        
         std::remove(pending_orders.begin(), pending_orders.end(), CoasterPager->id);
 
         // freeing next worker if any order is waiting
+        giving_worker.lock();
         worker_mutex.lock();
+        workers_id.emplace(CoasterPager->worker_id); // dodanie pracownika jako, że już może pracować
 
         if(!wait_for_worker.empty()) {
             wait_for_worker.front().unlock();
@@ -249,6 +266,7 @@ private:
             act_working--;
         }
         worker_mutex.unlock();
+        giving_worker.unlock();
     }
 
     void wait_for_product(std::string& product, std::mutex& mutex, std::unique_ptr<Product> future_product) {
@@ -271,6 +289,9 @@ private:
     machines_t machines_map;
     std::vector<std::string> menu;
 
+    std::mutex giving_worker;
+    std::queue<unsigned int> workers_id;
+    std::vector<WorkerReport> workers_report;
     std::vector<unsigned int> pending_orders;
 
     std::mutex pager_mutex; // mutex for protecting operations on pager_map

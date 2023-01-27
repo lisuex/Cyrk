@@ -44,37 +44,16 @@ struct WorkerReport
     std::vector<std::string> failedProducts;
 };
 
-class CoasterPager
-{
+class CoasterPager {
 public:
-    void wait() const;
-
-    void wait(unsigned int timeout) const;
-
-    [[nodiscard]] unsigned int getId() const;
-
-    [[nodiscard]] bool isReady() const;
-};
-
-class MyCoasterPager: public CoasterPager {
-public:
-    MyCoasterPager(unsigned int id, std::vector<std::unique_ptr<Product>>& ready_products,
-    std::mutex& is_ready_mutex, unsigned int products_num, std::condition_variable& wait_function_con, std::unique_lock<std::mutex>& uniq_mutex):
-    id(id),
-    ready_products(ready_products),
-    is_ready_mutex(is_ready_mutex),
-    products_num(products_num),
-    wait_function_con(wait_function_con),
-    uniq_mutex(uniq_mutex) {}
-
     void wait() const {
     wait_function_con.wait(uniq_mutex);
-}
+    }
 
     void wait(unsigned int timeout) const {
     auto now = std::chrono::system_clock::now();
     wait_function_con.wait_until(uniq_mutex, now + timeout * 1ms);
-}
+    }
 
     [[nodiscard]] unsigned int getId() const {
         return id;
@@ -87,6 +66,20 @@ public:
         else return true;
     }
 
+    friend class System;
+
+protected:
+    CoasterPager(unsigned int id, std::vector<std::unique_ptr<Product>>& ready_products,
+        std::mutex& is_ready_mutex, unsigned int products_num, std::condition_variable& wait_function_con, 
+        std::unique_lock<std::mutex>& uniq_mutex, std::condition_variable& worker_con):
+    id(id),
+    ready_products(ready_products),
+    is_ready_mutex(is_ready_mutex),
+    products_num(products_num),
+    wait_function_con(wait_function_con),
+    uniq_mutex(uniq_mutex),
+    worker_con(worker_con) {}
+
 private:
     unsigned int id;
     unsigned int products_num;
@@ -94,6 +87,7 @@ private:
     std::condition_variable& wait_function_con; // mutex waiting for the order to be ready
     std::vector<std::unique_ptr<Product>>& ready_products;
     std::unique_lock<std::mutex>& uniq_mutex;
+    std::condition_variable& worker_con; // condition variable for worker to get to know if client took his order
 };
 
 class System
@@ -153,9 +147,11 @@ public:
         std::mutex mut;
         std::unique_lock<std::mutex> lock(mut);
 
-        MyCoasterPager new_pager(id, ready_products, is_ready_mutex, products.size(), wait_function_con, lock);
+        std::condition_variable worker_con; // worker condition var signalizing if client took his order
 
-        std::thread worker{worker_orders, products, ready_products, is_ready_mutex, wait_function_con, id};
+        CoasterPager new_pager(id, ready_products, is_ready_mutex, products.size(), wait_function_con, lock, worker_con);
+
+        std::thread worker{worker_orders, products, ready_products, is_ready_mutex, wait_function_con, id, worker_con};
 
     }
 
@@ -173,7 +169,8 @@ private:
     // funkcja symbolizująca workera
     void worker_orders(std::vector<std::string> products, 
         std::vector<std::unique_ptr<Product>>& ready_products, std::mutex& is_ready_mutex,
-        std::condition_variable& wait_function_con, int id) {
+        std::condition_variable& wait_function_con, int id,
+        std::condition_variable& worker_con) {
 
         // array of "future" products that will be filled during wait_for_product function
         std::unique_ptr<Product> future_products[products.size()];
@@ -210,6 +207,12 @@ private:
         wait_function_con.notify_one();
         
         //TODO: tutaj czekasz ileś sekund aż ktoś odbierze i wtedy wpuszczasz "kolejnego pracownika"
+        auto now = std::chrono::system_clock::now();
+        // creating unique_mutex needed for wait_until
+        std::mutex mut;
+        std::unique_lock<std::mutex> lock(mut);
+
+        worker_con.wait_until(lock, now + clientTimeout * 1ms); // czekanie na sygnał od klienta który odebrał zamówienie, albo na Timeout
         // wpuszczanie jakoś tak wygląda: 
         /*
         worker_mutex.lock();

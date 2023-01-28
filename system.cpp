@@ -12,6 +12,7 @@
 
 #include "machine.hpp"
 using namespace std::chrono_literals;
+// TODO: awarie maszyn
 
 class FulfillmentFailure : public std::exception
 {
@@ -88,6 +89,8 @@ protected:
     worker_id(worker_id) {}
 
 private:
+    bool timeout = false;
+    bool collected = false;
     unsigned int worker_id;
     unsigned int id;
     std::vector<std::string>& products;
@@ -159,7 +162,6 @@ public:
 
         // creating parameters for new_pager
         std::vector<std::unique_ptr<Product>> ready_products;
-        std::mutex is_ready_mutex;
         bool is_ready = false;
 
         orders_ready_mutex.lock();
@@ -174,7 +176,7 @@ public:
 
         std::condition_variable worker_con; // worker condition var signalizing if client took his order
 
-        CoasterPager new_pager(id, ready_products, is_ready_mutex, products, wait_function_con, lock, worker_con, worker_id);
+        CoasterPager new_pager(id, ready_products, ordering_mutex, products, wait_function_con, lock, worker_con, worker_id);
 
         auto pager_ptr = std::make_unique<CoasterPager>(new_pager);
 
@@ -190,9 +192,12 @@ public:
     std::vector<std::unique_ptr<Product>> collectOrder(std::unique_ptr<CoasterPager> CoasterPager) {
         orders_ready_mutex.lock();
         if(!orders_mutexes_ready[CoasterPager->getId()]) throw OrderNotReadyException();
-        orders_ready_mutex.unlock();
-        //TODO: reszta wyjątków
+        else if(CoasterPager->timeout) throw OrderExpiredException();
+        else if(CoasterPager->collected) throw BadPagerException();
+        // TODO: gdy maszyna sie popsuła
 
+        CoasterPager->collected = true;
+        orders_ready_mutex.unlock(); 
 
         // jeśli gotowe
         CoasterPager->worker_con.notify_one();
@@ -226,17 +231,10 @@ private:
             threads_to_join.join();
         }
         
-        CoasterPager->is_ready_mutex.lock();
-        for(auto& product: future_products) {
-            CoasterPager->ready_products.push_back(product);
-        }
+        orders_ready_mutex.lock(); // mutex na zakończenia przyjmowania zamówienia, przydaje sie do collectOrder i do isReady w CoasterPager
 
-        orders_ready_mutex.lock();
         // changing the boolean value in map to true which helps collectOrder() to throw an exception
         orders_mutexes_ready[CoasterPager->id] = true;
-        orders_ready_mutex.unlock();
-
-        CoasterPager->is_ready_mutex.unlock();
 
         CoasterPager->wait_function_con.notify_one();
         
@@ -245,12 +243,30 @@ private:
         std::mutex mut;
         std::unique_lock<std::mutex> lock(mut);
 
-        CoasterPager->worker_con.wait_until(lock, now + clientTimeout * 1ms); // czekanie na sygnał od klienta który odebrał zamówienie, albo na Timeout
+        auto status = CoasterPager->worker_con.wait_until(lock, now + clientTimeout * 1ms); // czekanie na sygnał od klienta który odebrał zamówienie, albo na Timeout
+        if(status == std::cv_status::timeout) {
+            // zwrot produktów
+            for(int i = 0; i < products.size(); i++) {
+                // TODO: nie wiem czy to move to dobrze
+                machines_map[products[i]]->returnProduct(std::move(future_products[i]));
+            }
+            workers_report[CoasterPager->worker_id].abandonedOrders.push_back(CoasterPager->products);
+            CoasterPager->timeout = true;
+        }
+        else if (1){
+            // TODO: awarie maszyn
+        }
+        else {
+            // TODO: jeśli poprawnie
+            workers_report[CoasterPager->worker_id].collectedOrders.push_back(CoasterPager->products);
 
-        // TODO: jeśli poprawnie odebrane zamówienie
-        workers_report[CoasterPager->worker_id].collectedOrders.push_back(CoasterPager->products);
-        // TODO: jeśli niepoprawnie odebrane to do innych rzeczy trzeba dodać 
-        
+            for(auto& product: future_products) {
+                CoasterPager->ready_products.push_back(product);
+            }
+        }
+
+        orders_ready_mutex.unlock(); // unlock for collectOrder function
+
         std::remove(pending_orders.begin(), pending_orders.end(), CoasterPager->id);
 
         // freeing next worker if any order is waiting

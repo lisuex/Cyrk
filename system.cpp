@@ -64,11 +64,13 @@ public:
     friend class System;
 
 protected:
-    CoasterPager(unsigned int order_id):
-    order_id(order_id) {}
+    CoasterPager(unsigned int order_id, std::vector<std::string> products):
+    order_id(order_id),
+    products(products) {}
 
 private:
     unsigned int order_id;
+    std::vector<std::string> products;
     std::vector<std::unique_ptr<Product>> ready_products; // wetkor gdzie na bieżąco są dodawane zrobione gotowe produkty
 };
 
@@ -81,7 +83,8 @@ public:
         machines_map(machines),
         numberOfWorkers(numberOfWorkers),
         clientTimeout(clientTimeout),
-        act_id(0) {
+        act_id(0),
+        worker_waiting(0) {
             // tworzenie stałych wątków dla workerów
             for(int i = 0; i < numberOfWorkers; i++) {
                 worker_threads.insert({i,std::thread{worker_function}});
@@ -100,19 +103,25 @@ public:
     }
 
     std::vector<unsigned int> getPendingOrders() const {
-        std::vector<unsigned int> pending_orders;
+        return pending_orders;
     }
 
     std::unique_ptr<CoasterPager> order(std::vector<std::string> products) {
         order_mutex.lock(); // początek składania zamówienia
         act_id++;
-        CoasterPager new_pager{act_id};
+        CoasterPager new_pager{act_id, products};
         auto pager_ptr = std::make_unique<CoasterPager>(new_pager);
 
-        pending_orders.emplace(std::make_tuple(pager_ptr, act_id, products));
+        pager_map.insert(std::make_pair(act_id, pager_ptr));
 
-        // TODO:tu powinien tylko wtedy notyfikować gdy czekają workerzy, w przeciwnym przypadku tylko ustawia sie w kolejce
-        take_order.notify_one();
+        worker_mutex.lock();
+
+        pending_orders.push_back(act_id);
+        if(worker_waiting > 0) {
+            take_order.notify_one();
+        }
+        worker_mutex.unlock();
+
         return pager_ptr;
     }
 
@@ -126,15 +135,22 @@ public:
 private:
     void worker_function() {
         while(true){
-            std::unique_lock<std::mutex> lock(take_order_mutex);
-            take_order.wait(lock);
+            worker_mutex.lock();
+            // jeśli nie ma żadnego zamówienia to sami musimy czekać
+            if(pending_orders.empty()) {
+                worker_waiting++;
+                std::unique_lock<std::mutex> lock(worker_mutex);
+                take_order.wait(lock);
+                worker_waiting--;
+            }
 
-            auto& order = pending_orders.front(); 
-            pending_orders.pop();
+            // pobieranie pierwszego czekającego order_id
+            unsigned int order_id = pending_orders.front();
+            pending_orders.erase(pending_orders.begin());
+            worker_mutex.unlock();
 
-            const auto& products_vector = std::get<2>(order);
-            unsigned int order_id = std::get<1>(order);
-            const auto& pager_ptr = std::get<0>(order);
+            const auto& pager_ptr = pager_map.at(order_id);
+            const auto& products_vector = pager_ptr->products;
             
             pager_map.insert(std::make_pair(order_id, pager_ptr));
 
@@ -182,9 +198,6 @@ private:
 
     std::mutex order_mutex; // mutex na operacje rozpoczęcia zamówienia
 
-    std::condition_variable take_order; // zmienna warunkowa sygnalizująca robotników, że jest jakieś zamówienie do przetworzenia
-    std::mutex take_order_mutex; // mutex dla zmiennej warunkowej take_order
-    
     machines_t machines_map;
     std::unordered_map<unsigned int, std::thread> worker_threads; // mapa z (id_workera, worker_thread)
     std::unordered_map<std::string, std::thread> machines_threads; // mapa z (nazwa_maszyny, worker_thread)
@@ -198,6 +211,8 @@ private:
     
     std::unordered_map<unsigned int, std::unique_ptr<CoasterPager>> pager_map; // mapa (numer zamówienia, wskaźnik na CoasterPager)
 
-    std::vector<unsigned int> pending_orders_vector; // wektor oczekujących numerów zamówień
-    std::queue<std::tuple<std::unique_ptr<CoasterPager>, unsigned int, std::vector<std::string>>> pending_orders; // zamówienia złożone, ale jeszcze oczekujące na rozpoczęcie realizacji 
+    unsigned int worker_waiting;
+    std::condition_variable take_order; // zmienna warunkowa sygnalizująca robotników, że jest jakieś zamówienie do przetworzenia
+    std::mutex worker_mutex; // mutex na sprawdzanie pending_orders
+    std::vector<unsigned int> pending_orders; // wektor oczekujących numerów zamówień
 };

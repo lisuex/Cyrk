@@ -36,23 +36,36 @@ using namespace std::chrono_literals;
         numberOfWorkers(numberOfWorkers),
         clientTimeout(clientTimeout),
         act_id(0),
+        menu({}),
+        machines_queues({}),
         worker_waiting(0) {
             // tworzenie stałych wątków dla workerów
             for(int i = 0; i < (int)numberOfWorkers; i++) {
-                std::thread t{&System::worker_function, this};
-                worker_threads.insert({i,std::move(t)});
+                worker_threads.insert({i,std::thread{&System::worker_function, this}});
             }
 
             // tworzenie stałych wątków dla maszyn
             for(auto machine: machines) {
+                std::cout << "constuctor 0" << std::endl;
                 menu.push_back(machine.first);
-                machines_threads.insert({machine.first, std::thread{&System::machine_function, this, machine.first}});
+                std::cout << "menu read " << std::endl;
+                for(auto x: menu) std::cout << "menu: " << x << std::endl;
+                std::cout << "menu read end" << std::endl;
+
+                std::cout << "constuctor 1" << std::endl;
                 machines_queues.insert({machine.first, {}});
+                std::cout << "constuctor 2" << std::endl;
+                machines_threads.insert({machine.first, std::thread{&System::machine_function, this, machine.first}});
+                
+                std::cout << "constuctor 3" << std::endl;
             }
 
         }
 
     std::vector<std::string> System::getMenu() const {
+        std::cout << "menu" << std::endl;
+        for(auto x: menu) std::cout << "menu: " << x << std::endl;
+        std::cout << "after for in menu" << std::endl;
         return menu;
     }
 
@@ -61,24 +74,32 @@ using namespace std::chrono_literals;
     }
 
     std::unique_ptr<CoasterPager> System::order(std::vector<std::string> products) {
+        std::cout << "order0" << std::endl;
         order_mutex.lock(); // początek składania zamówienia
         act_id++;
-
+        std::cout << "order1" << std::endl;
         std::mutex is_ready_mutex;
+        std::cout << "order2" << std::endl;
         is_ready_mutex.lock();
+        std::cout << "order3" << std::endl;
 
         auto pager_ptr = std::unique_ptr<CoasterPager>(new CoasterPager(act_id, products, &is_ready_mutex));
-
+        std::cout << "order4" << std::endl;
         pager_map.insert(std::make_pair(act_id, std::move(pager_ptr)));
 
+        std::cout << "order5" << std::endl;
         worker_mutex.lock();
 
+        std::cout << "order6" << std::endl;
         pending_orders.push_back(act_id);
+        std::cout << "order7" << std::endl;
         waiting_pager.insert(std::make_pair(act_id, &is_ready_mutex));
+        std::cout << "order8" << std::endl;
 
         if(worker_waiting > 0) {
             take_order.notify_one();
         }
+        std::cout << "order9" << std::endl;
         worker_mutex.unlock();
 
         return pager_ptr;
@@ -94,9 +115,12 @@ using namespace std::chrono_literals;
 
     void System::worker_function() {
         while(true){
+            std::cout << "worker function 0" << std::endl;
             worker_mutex.lock();
+            std::cout << "worker function 1" << std::endl;
             // jeśli nie ma żadnego zamówienia to sami musimy czekać
             if(pending_orders.empty()) {
+                std::cout << "worker function 2" << std::endl;
                 worker_waiting++;
                 std::unique_lock<std::mutex> lock(worker_mutex);
                 take_order.wait(lock);
@@ -128,11 +152,16 @@ using namespace std::chrono_literals;
         }
     }
     void System::machine_function(std::string name) {
+        std::cout << "machines map before" << std::endl;
         auto machine = machines_map.at(name);
+        std::cout << "machines map after" << std::endl;
         machine->start();
         while(true){
+            std::cout << "machines0" << std::endl;
             machine_mutex.lock();
+            std::cout << "machines1" << std::endl;
             if(machines_queues.at(name).size() == 0) {
+                std::cout << "machines2" << std::endl;
                 machines_waiting.at(name) = true;
                 std::unique_lock<std::mutex> lock(machine_mutex);
 
@@ -140,6 +169,7 @@ using namespace std::chrono_literals;
                 machines_signal_map.at(name).wait(lock); // czekanie aż przyjdzie klient
                 machines_waiting.at(name) = false;
             }
+            std::cout << "machines3" << std::endl;
             auto order_id = machines_queues.at(name).front();
             machines_queues.at(name).pop();
             machine_mutex.unlock();

@@ -145,16 +145,23 @@ int main() {
     };
 
     auto client1 = std::thread([&system]() {
+        std::cout << "here1" << std::endl;
         system.getMenu();
+        std::cout << "here2" << std::endl;
         auto p = system.order({"burger", "chips"});
+        std::cout << "here3" << std::endl;
         p->wait();
+        std::cout << "here4" << std::endl;
         system.collectOrder(std::move(p));
         std::cout << "OK\n";
     });
 
-    auto client2 = std::thread([&system](){
+    /*auto client2 = std::thread([&system](){
+        std::cout << "here5" << std::endl;
         system.getMenu();
+        std::cout << "here6" << std::endl;
         system.getPendingOrders();
+        std::cout << "here7" << std::endl;
         try {
             auto p = system.order({"iceCream", "chips"});
             p->wait();
@@ -162,12 +169,12 @@ int main() {
         } catch (const FulfillmentFailure& e) {
             std::cout << "OK\n";
         }
-    });
+    });*/
 
 
     client1.join();
-    client2.join();
-
+    //client2.join();
+    std::cout << "SHUTDOWN" << std::endl;
     system.shutdown();
 
     auto client3 = std::thread([&system](){

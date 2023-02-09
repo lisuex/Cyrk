@@ -49,7 +49,7 @@ struct WorkerReport
 class CoasterPager {
 public:
     void wait() const {
-        system->waiting_pager.at(order_id)->lock();
+        ready_mutex->lock();
     }
 
     void wait(unsigned int timeout) const {
@@ -66,17 +66,17 @@ public:
     friend class System;
 
 protected:
-    CoasterPager(unsigned int order_id, std::vector<std::string> products, std::unique_ptr<System> system):
+    CoasterPager(unsigned int order_id, std::vector<std::string> products, std::unique_ptr<std::mutex>& ready_mutex):
     order_id(order_id),
     products(products),
-    system(system) {}
+    ready_mutex(ready_mutex) {}
 
 private:
+    std::unique_ptr<std::mutex>& ready_mutex;
     std::mutex ready_mutex;
     std::condition_variable ready; // condition_variable sygnalizowane gdy produkt jest gotowy
     unsigned int order_id;
     std::vector<std::string> products;
-    std::unique_ptr<System>& system;
     std::vector<std::unique_ptr<Product>> ready_products; // wetkor gdzie na bieżąco są dodawane zrobione gotowe produkty
 };
 
@@ -119,20 +119,18 @@ public:
         order_mutex.lock(); // początek składania zamówienia
         act_id++;
 
-        CoasterPager new_pager{act_id, products, std::make_unique<System>(*this)};
+        std::mutex is_ready_mutex;
+        is_ready_mutex.lock();
+        auto is_ready_ptr = std::make_unique<std::mutex>(is_ready_mutex);
+
+        CoasterPager new_pager{act_id, products, is_ready_ptr};
         auto pager_ptr = std::make_unique<CoasterPager>(new_pager);
 
-        std::mutex mut;
-        std::condition_variable con;
         pager_map.insert(std::make_pair(act_id, pager_ptr));
 
         worker_mutex.lock();
 
         pending_orders.push_back(act_id);
-
-        std::mutex is_ready_mutex;
-        is_ready_mutex.lock();
-        auto is_ready_ptr = std::make_unique<std::mutex>(is_ready_mutex);
         waiting_pager.insert(std::make_pair(act_id, is_ready_ptr));
 
         if(worker_waiting > 0) {

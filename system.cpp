@@ -9,129 +9,72 @@
 #include <queue>
 #include <chrono>
 #include <algorithm>
+#include <iostream>
 
 #include "machine.hpp"
 using namespace std::chrono_literals;
-// TODO: awarie maszyn
 
-class FulfillmentFailure : public std::exception
-{
-};
-
-class OrderNotReadyException : public std::exception
-{
-};
-
-class BadOrderException : public std::exception
-{
-};
-
-class BadPagerException : public std::exception
-{
-};
-
-class OrderExpiredException : public std::exception
-{
-};
-
-class RestaurantClosedException : public std::exception
-{
-};
-
-struct WorkerReport
-{
-    std::vector<std::vector<std::string>> collectedOrders;
-    std::vector<std::vector<std::string>> abandonedOrders;
-    std::vector<std::vector<std::string>> failedOrders;
-    std::vector<std::string> failedProducts;
-};
-
-class CoasterPager {
-public:
-    void wait() const {
+    void CoasterPager::wait() const {
         ready_mutex->lock();
     }
 
-    void wait(unsigned int timeout) const {
-        
+    void CoasterPager::wait(unsigned int timeout) const {
+        // cokolwiek by nie był unused
+        std::cout << timeout;
     }
 
-    [[nodiscard]] unsigned int getId() const {
+    [[nodiscard]] unsigned int CoasterPager::getId() const {
         return order_id;
     }
 
-    [[nodiscard]] bool isReady() const {
+    [[nodiscard]] bool CoasterPager::isReady() const {
+        return true;
     }
-
-    friend class System;
-
-protected:
-    CoasterPager(unsigned int order_id, std::vector<std::string> products, std::unique_ptr<std::mutex>& ready_mutex):
-    order_id(order_id),
-    products(products),
-    ready_mutex(ready_mutex) {}
-
-private:
-    std::unique_ptr<std::mutex>& ready_mutex;
-    std::mutex ready_mutex;
-    std::condition_variable ready; // condition_variable sygnalizowane gdy produkt jest gotowy
-    unsigned int order_id;
-    std::vector<std::string> products;
-    std::vector<std::unique_ptr<Product>> ready_products; // wetkor gdzie na bieżąco są dodawane zrobione gotowe produkty
-};
-
-class System
-{
-public:
-    typedef std::unordered_map<std::string, std::shared_ptr<Machine>> machines_t;
     
-    System(machines_t machines, unsigned int numberOfWorkers, unsigned int clientTimeout) :
+    System::System(machines_t machines, unsigned int numberOfWorkers, unsigned int clientTimeout) :
         machines_map(machines),
         numberOfWorkers(numberOfWorkers),
         clientTimeout(clientTimeout),
         act_id(0),
         worker_waiting(0) {
             // tworzenie stałych wątków dla workerów
-            for(int i = 0; i < numberOfWorkers; i++) {
-                worker_threads.insert({i,std::thread{worker_function}});
+            for(int i = 0; i < (int)numberOfWorkers; i++) {
+                std::thread t{&System::worker_function, this};
+                worker_threads.insert({i,std::move(t)});
             }
 
             // tworzenie stałych wątków dla maszyn
             for(auto machine: machines) {
                 menu.push_back(machine.first);
-                machines_threads.insert({machine.first, std::thread{machine_function, machine.first}});
+                machines_threads.insert({machine.first, std::thread{&System::machine_function, this, machine.first}});
                 machines_queues.insert({machine.first, {}});
             }
 
         }
 
-    std::vector<WorkerReport> shutdown();
-
-    std::vector<std::string> getMenu() const {
+    std::vector<std::string> System::getMenu() const {
         return menu;
     }
 
-    std::vector<unsigned int> getPendingOrders() const {
+    std::vector<unsigned int> System::getPendingOrders() const {
         return pending_orders;
     }
 
-    std::unique_ptr<CoasterPager> order(std::vector<std::string> products) {
+    std::unique_ptr<CoasterPager> System::order(std::vector<std::string> products) {
         order_mutex.lock(); // początek składania zamówienia
         act_id++;
 
         std::mutex is_ready_mutex;
         is_ready_mutex.lock();
-        auto is_ready_ptr = std::make_unique<std::mutex>(is_ready_mutex);
 
-        CoasterPager new_pager{act_id, products, is_ready_ptr};
-        auto pager_ptr = std::make_unique<CoasterPager>(new_pager);
+        auto pager_ptr = std::unique_ptr<CoasterPager>(new CoasterPager(act_id, products, &is_ready_mutex));
 
-        pager_map.insert(std::make_pair(act_id, pager_ptr));
+        pager_map.insert(std::make_pair(act_id, std::move(pager_ptr)));
 
         worker_mutex.lock();
 
         pending_orders.push_back(act_id);
-        waiting_pager.insert(std::make_pair(act_id, is_ready_ptr));
+        waiting_pager.insert(std::make_pair(act_id, &is_ready_mutex));
 
         if(worker_waiting > 0) {
             take_order.notify_one();
@@ -141,17 +84,15 @@ public:
         return pager_ptr;
     }
 
-    std::vector<std::unique_ptr<Product>> collectOrder(std::unique_ptr<CoasterPager> CoasterPager) {
-
+    std::vector<std::unique_ptr<Product>> System::collectOrder(std::unique_ptr<CoasterPager> CoasterPager) {
+        return std::move(CoasterPager->ready_products);
     }
 
-    unsigned int getClientTimeout() const {
+    unsigned int System::getClientTimeout() const {
         return this->clientTimeout;
     }
 
-    friend class CoasterPager;
-private:
-    void worker_function() {
+    void System::worker_function() {
         while(true){
             worker_mutex.lock();
             // jeśli nie ma żadnego zamówienia to sami musimy czekać
@@ -186,7 +127,7 @@ private:
             order_mutex.unlock(); // koniec składania zamówienia, wszystko dodane do kolejek do maszyn
         }
     }
-    void machine_function(std::string name) {
+    void System::machine_function(std::string name) {
         auto machine = machines_map.at(name);
         machine->start();
         while(true){
@@ -208,7 +149,7 @@ private:
 
             pager_access.lock();
             auto& pager = pager_map.at(order_id);
-            pager->ready_products.push_back(product); // dodawanie zrobionego produktu do wektora zrobionych w CoasterPager
+            pager->ready_products.push_back(std::move(product)); // dodawanie zrobionego produktu do wektora zrobionych w CoasterPager
             // jeżeli jesteśmy ostatnim dodanych produktem do zamówienia
             if(pager->ready_products.size() >= pager->products.size()) {
                 waiting_pager.at(order_id)->unlock();
@@ -216,30 +157,3 @@ private:
             pager_access.unlock();
         }
     }
-    unsigned int act_id; // aktualne id zamówienia
-    unsigned int numberOfWorkers;
-    unsigned int clientTimeout;
-
-    std::vector<std::string> menu; // wektor z menu potrzebny do metody getMenu()
-
-    std::mutex order_mutex; // mutex na operacje rozpoczęcia zamówienia
-
-    machines_t machines_map;
-    std::unordered_map<unsigned int, std::thread> worker_threads; // mapa z (id_workera, worker_thread)
-    std::unordered_map<std::string, std::thread> machines_threads; // mapa z (nazwa_maszyny, worker_thread)
-
-    std::mutex pager_access; // mutex do dostępu do pagera żeby wiele maszyn naraz nie dodawało rzeczy do "zrobionych" w pagerze
-    std::unordered_map<std::string, std::condition_variable> machines_signal_map; // mapa z condition variable dla maszyn
-    std::mutex singal_mutex; // mutex dla mapy powyżej
-    std::unordered_map<std::string, bool> machines_waiting;
-    std::mutex machine_mutex; // mutex do operacji na machines_queues
-    std::unordered_map<std::string, std::queue<unsigned int>> machines_queues; // mapa kolejek id_zamówień do maszyn
-    
-    std::unordered_map<unsigned int, std::unique_ptr<CoasterPager>> pager_map; // mapa (numer zamówienia, wskaźnik na CoasterPager, condition_variable, mutex)
-
-    std::unordered_map<unsigned int, std::unique_ptr<std::mutex>> waiting_pager; // mapa z mutexem na którym czeka wait w CoasterPager
-    unsigned int worker_waiting;
-    std::condition_variable take_order; // zmienna warunkowa sygnalizująca robotników, że jest jakieś zamówienie do przetworzenia
-    std::mutex worker_mutex; // mutex na sprawdzanie pending_orders
-    std::vector<unsigned int> pending_orders; // wektor oczekujących numerów zamówień
-};

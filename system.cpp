@@ -15,6 +15,7 @@
 using namespace std::chrono_literals;
 
     void CoasterPager::wait() const {
+        std::cout << "CoasterPager wait" << std::endl;
         ready_mutex->lock();
     }
 
@@ -54,6 +55,7 @@ using namespace std::chrono_literals;
 
                 std::cout << "constuctor 1" << std::endl;
                 machines_queues.insert({machine.first, {}});
+                machines_waiting.insert({machine.first, true});
                 std::cout << "constuctor 2" << std::endl;
                 machines_threads.insert({machine.first, std::thread{&System::machine_function, this, machine.first}});
                 
@@ -78,12 +80,10 @@ using namespace std::chrono_literals;
         order_mutex.lock(); // początek składania zamówienia
         act_id++;
         std::cout << "order1" << std::endl;
-        std::mutex is_ready_mutex;
-        std::cout << "order2" << std::endl;
-        is_ready_mutex.lock();
-        std::cout << "order3" << std::endl;
 
-        auto pager_ptr = std::unique_ptr<CoasterPager>(new CoasterPager(act_id, products, &is_ready_mutex));
+        auto pager_ptr = std::unique_ptr<CoasterPager>(new CoasterPager(act_id, products, std::unique_ptr<std::mutex>(new std::mutex)));
+        std::cout << "order2" << std::endl;
+        pager_ptr->ready_mutex->lock();
         std::cout << "order4" << std::endl;
         pager_map.insert(std::make_pair(act_id, std::move(pager_ptr)));
 
@@ -93,7 +93,8 @@ using namespace std::chrono_literals;
         std::cout << "order6" << std::endl;
         pending_orders.push_back(act_id);
         std::cout << "order7" << std::endl;
-        waiting_pager.insert(std::make_pair(act_id, &is_ready_mutex));
+        std::unique_ptr<std::mutex>& ptr = pager_ptr->ready_mutex;
+        waiting_pager.insert(std::make_pair(act_id, std::move(ptr)));
         std::cout << "order8" << std::endl;
 
         if(worker_waiting > 0) {
@@ -101,6 +102,7 @@ using namespace std::chrono_literals;
         }
         std::cout << "order9" << std::endl;
         worker_mutex.unlock();
+        std::cout << "order10" << std::endl;
 
         return pager_ptr;
     }
@@ -114,56 +116,74 @@ using namespace std::chrono_literals;
     }
 
     void System::worker_function() {
+        
         while(true){
             std::cout << "worker function 0" << std::endl;
-            worker_mutex.lock();
+            std::unique_lock<std::mutex> lock(worker_mutex);
             std::cout << "worker function 1" << std::endl;
             // jeśli nie ma żadnego zamówienia to sami musimy czekać
             if(pending_orders.empty()) {
                 std::cout << "worker function 2" << std::endl;
                 worker_waiting++;
-                std::unique_lock<std::mutex> lock(worker_mutex);
+                std::cout << "before waiting" << std::endl;
                 take_order.wait(lock);
+                std::cout << "after waiting" << std::endl;
                 worker_waiting--;
             }
 
             // pobieranie pierwszego czekającego order_id
             unsigned int order_id = pending_orders.front();
+            std::cout << "odebrane order_id = " << order_id << std::endl;
             pending_orders.erase(pending_orders.begin());
             worker_mutex.unlock();
+            std::cout << "worker function 3" << std::endl;
 
-            const auto& pager_ptr = pager_map.at(order_id);
+            if(pager_map.find(order_id) != pager_map.end()) {
+                std::cout << "znalezione" << std::endl;
+            }
+            else {
+                std::cout << "nie znalezione" << std::endl;
+            }
+            auto& pager_ptr = pager_map.at(order_id);
+            std::cout << "worker function 4" << std::endl;
             const auto& products_vector = pager_ptr->products;
+            std::cout << "worker function 5" << std::endl;
             
             
 
             // składanie zamowień do maszyn od konkretnych produktów
             for(const auto& product: products_vector) {
+                std::cout << "worker function 6" << std::endl;
                 machine_mutex.lock();
+                std::cout << "worker function 7" << std::endl;
                 machines_queues.at(product).emplace(order_id);
+                std::cout << "worker function 8" << std::endl;
 
                 // jeśli maszyna aktualnie czeka na zamówienie
                 if(machines_waiting.at(product)) {
+                    std::cout << "worker function 9" << std::endl;
                     machines_signal_map.at(product).notify_one();
                 }
+                std::cout << "worker function 10" << std::endl;
                 machine_mutex.unlock();
             }
             order_mutex.unlock(); // koniec składania zamówienia, wszystko dodane do kolejek do maszyn
         }
+        
     }
     void System::machine_function(std::string name) {
+        /*
         std::cout << "machines map before" << std::endl;
         auto machine = machines_map.at(name);
         std::cout << "machines map after" << std::endl;
         machine->start();
         while(true){
             std::cout << "machines0" << std::endl;
-            machine_mutex.lock();
+            std::unique_lock<std::mutex> lock(machine_mutex);
             std::cout << "machines1" << std::endl;
             if(machines_queues.at(name).size() == 0) {
                 std::cout << "machines2" << std::endl;
                 machines_waiting.at(name) = true;
-                std::unique_lock<std::mutex> lock(machine_mutex);
 
                 // opuszcza machine mutex bo wywował wait(chyba tak to działa)
                 machines_signal_map.at(name).wait(lock); // czekanie aż przyjdzie klient
@@ -186,4 +206,5 @@ using namespace std::chrono_literals;
             }
             pager_access.unlock();
         }
+        */
     }

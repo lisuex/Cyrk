@@ -58,7 +58,7 @@ public:
 
     friend class System;
 protected:
-    CoasterPager(unsigned int order_id, std::vector<std::string> products, std::mutex* ready_mutex):
+    CoasterPager(unsigned int order_id, std::vector<std::string> products, std::unique_ptr<std::mutex> ready_mutex):
     order_id(order_id),
     products(products),
     ready_mutex(ready_mutex) {}
@@ -67,7 +67,7 @@ private:
     std::condition_variable ready; // condition_variable sygnalizowane gdy produkt jest gotowy
     unsigned int order_id;
     std::vector<std::string> products;
-    std::mutex* ready_mutex;
+    std::unique_ptr<std::mutex>& ready_mutex;
     std::vector<std::unique_ptr<Product>> ready_products; // wetkor gdzie na bieżąco są dodawane zrobione gotowe produkty
 };
 

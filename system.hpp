@@ -45,6 +45,8 @@ struct WorkerReport
     std::vector<std::string> failedProducts;
 };
 
+class System;
+
 class CoasterPager
 {
 public:
@@ -58,16 +60,14 @@ public:
 
     friend class System;
 protected:
-    CoasterPager(unsigned int order_id, std::vector<std::string> products, std::unique_ptr<std::mutex> ready_mutex):
+    CoasterPager(unsigned int order_id, System* system):
     order_id(order_id),
-    products(products),
-    ready_mutex(ready_mutex) {}
+    system(system) {}
 
 private:
     std::condition_variable ready; // condition_variable sygnalizowane gdy produkt jest gotowy
     unsigned int order_id;
-    std::vector<std::string> products;
-    std::unique_ptr<std::mutex>& ready_mutex;
+    System* system;
     std::vector<std::unique_ptr<Product>> ready_products; // wetkor gdzie na bieżąco są dodawane zrobione gotowe produkty
 };
 
@@ -111,19 +111,21 @@ private:
     std::unordered_map<std::string, std::thread> machines_threads; // mapa z (nazwa_maszyny, worker_thread)
 
     std::mutex pager_access; // mutex do dostępu do pagera żeby wiele maszyn naraz nie dodawało rzeczy do "zrobionych" w pagerze
-    std::unordered_map<std::string, std::condition_variable> machines_signal_map; // mapa z condition variable dla maszyn
+    std::unordered_map<std::string, std::unique_ptr<std::condition_variable>> machines_signal_map; // mapa z condition variable dla maszyn
     std::mutex singal_mutex; // mutex dla mapy powyżej
     std::unordered_map<std::string, bool> machines_waiting;
     std::mutex machine_mutex; // mutex do operacji na machines_queues
     std::unordered_map<std::string, std::queue<unsigned int>> machines_queues; // mapa kolejek id_zamówień do maszyn
-    
-    std::unordered_map<unsigned int, std::unique_ptr<CoasterPager>> pager_map; // mapa (numer zamówienia, wskaźnik na CoasterPager, condition_variable, mutex)
 
+    std::unordered_map<unsigned int, std::vector<std::string> > orders;
+    std::unordered_map<unsigned int, std::vector<std::unique_ptr<Product>> > collected_products;
+    
     std::unordered_map<unsigned int, std::unique_ptr<std::mutex>> waiting_pager; // mapa z mutexem na którym czeka wait w CoasterPager
     unsigned int worker_waiting;
     std::condition_variable take_order; // zmienna warunkowa sygnalizująca robotników, że jest jakieś zamówienie do przetworzenia
     std::mutex worker_mutex; // mutex na sprawdzanie pending_orders
     std::vector<unsigned int> pending_orders; // wektor oczekujących numerów zamówień
 };
+
 
 #endif // SYSTEM_HPP

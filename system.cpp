@@ -10,13 +10,15 @@
 #include <chrono>
 #include <algorithm>
 #include <iostream>
+#include <chrono>
+#include<unistd.h>
 
 #include "machine.hpp"
-using namespace std::chrono_literals;
 
     void CoasterPager::wait() const {
         std::cout << "CoasterPager wait" << std::endl;
-        ready_mutex->lock();
+        //system->waiting_pager.at(order_id)->lock();
+        sleep(1);
     }
 
     void CoasterPager::wait(unsigned int timeout) const {
@@ -31,7 +33,7 @@ using namespace std::chrono_literals;
     [[nodiscard]] bool CoasterPager::isReady() const {
         return true;
     }
-    
+
     System::System(machines_t machines, unsigned int numberOfWorkers, unsigned int clientTimeout) :
         machines_map(machines),
         numberOfWorkers(numberOfWorkers),
@@ -54,8 +56,10 @@ using namespace std::chrono_literals;
                 std::cout << "menu read end" << std::endl;
 
                 std::cout << "constuctor 1" << std::endl;
+                std::cout << "machine_first: " << machine.first << std::endl;
                 machines_queues.insert({machine.first, {}});
                 machines_waiting.insert({machine.first, true});
+                machines_signal_map.insert({machine.first, std::unique_ptr<std::condition_variable>(new std::condition_variable())});
                 std::cout << "constuctor 2" << std::endl;
                 machines_threads.insert({machine.first, std::thread{&System::machine_function, this, machine.first}});
                 
@@ -81,20 +85,22 @@ using namespace std::chrono_literals;
         act_id++;
         std::cout << "order1" << std::endl;
 
-        auto pager_ptr = std::unique_ptr<CoasterPager>(new CoasterPager(act_id, products, std::unique_ptr<std::mutex>(new std::mutex)));
         std::cout << "order2" << std::endl;
-        pager_ptr->ready_mutex->lock();
         std::cout << "order4" << std::endl;
-        pager_map.insert(std::make_pair(act_id, std::move(pager_ptr)));
-
+        
         std::cout << "order5" << std::endl;
         worker_mutex.lock();
 
         std::cout << "order6" << std::endl;
         pending_orders.push_back(act_id);
         std::cout << "order7" << std::endl;
-        std::unique_ptr<std::mutex>& ptr = pager_ptr->ready_mutex;
-        waiting_pager.insert(std::make_pair(act_id, std::move(ptr)));
+        waiting_pager.insert(std::make_pair(act_id, std::unique_ptr<std::mutex>(new std::mutex())));
+        waiting_pager.at(act_id)->lock();
+        std::unique_ptr<CoasterPager> pager_ptr = std::unique_ptr<CoasterPager>(new CoasterPager(act_id, this));
+
+        orders.insert({act_id, products});
+        collected_products.insert({act_id, std::vector<std::unique_ptr<Product>>{}});
+        std::cout << "ORDERID: " << pager_ptr->order_id << "ESSA1" << std::endl;
         std::cout << "order8" << std::endl;
 
         if(worker_waiting > 0) {
@@ -104,11 +110,15 @@ using namespace std::chrono_literals;
         worker_mutex.unlock();
         std::cout << "order10" << std::endl;
 
-        return pager_ptr;
+        return std::move(pager_ptr);
     }
 
     std::vector<std::unique_ptr<Product>> System::collectOrder(std::unique_ptr<CoasterPager> CoasterPager) {
-        return std::move(CoasterPager->ready_products);
+        std::cout << "essa1" << std::endl;
+        waiting_pager.at(CoasterPager->order_id)->lock();
+        std::cout << "essa 2" << std::endl;
+        std::cout << "essa3" << std::endl;
+        return std::move(collected_products.at(CoasterPager->order_id));
     }
 
     unsigned int System::getClientTimeout() const {
@@ -138,31 +148,30 @@ using namespace std::chrono_literals;
             worker_mutex.unlock();
             std::cout << "worker function 3" << std::endl;
 
-            if(pager_map.find(order_id) != pager_map.end()) {
+            if(orders.find(order_id) != orders.end()) {
                 std::cout << "znalezione" << std::endl;
             }
             else {
                 std::cout << "nie znalezione" << std::endl;
             }
-            auto& pager_ptr = pager_map.at(order_id);
             std::cout << "worker function 4" << std::endl;
-            const auto& products_vector = pager_ptr->products;
-            std::cout << "worker function 5" << std::endl;
             
             
 
             // składanie zamowień do maszyn od konkretnych produktów
-            for(const auto& product: products_vector) {
+            for(auto product: orders.at(order_id)) {
+                std::cout << "product: " << product << std::endl;
                 std::cout << "worker function 6" << std::endl;
                 machine_mutex.lock();
                 std::cout << "worker function 7" << std::endl;
+
                 machines_queues.at(product).emplace(order_id);
                 std::cout << "worker function 8" << std::endl;
 
                 // jeśli maszyna aktualnie czeka na zamówienie
                 if(machines_waiting.at(product)) {
                     std::cout << "worker function 9" << std::endl;
-                    machines_signal_map.at(product).notify_one();
+                    machines_signal_map.at(product)->notify_one();
                 }
                 std::cout << "worker function 10" << std::endl;
                 machine_mutex.unlock();
@@ -172,7 +181,7 @@ using namespace std::chrono_literals;
         
     }
     void System::machine_function(std::string name) {
-        /*
+        
         std::cout << "machines map before" << std::endl;
         auto machine = machines_map.at(name);
         std::cout << "machines map after" << std::endl;
@@ -186,7 +195,7 @@ using namespace std::chrono_literals;
                 machines_waiting.at(name) = true;
 
                 // opuszcza machine mutex bo wywował wait(chyba tak to działa)
-                machines_signal_map.at(name).wait(lock); // czekanie aż przyjdzie klient
+                machines_signal_map.at(name)->wait(lock); // czekanie aż przyjdzie klient
                 machines_waiting.at(name) = false;
             }
             std::cout << "machines3" << std::endl;
@@ -195,16 +204,21 @@ using namespace std::chrono_literals;
             machine_mutex.unlock();
             
             // skoro ma klienta to pobiera zamówienie
+            std::cout << "BEFORE GET PRODUCT" << std::endl;
             std::unique_ptr<Product> product = machine->getProduct();
+            std::cout << "AFTER GET PRODUCT" << std::endl;
 
             pager_access.lock();
-            auto& pager = pager_map.at(order_id);
-            pager->ready_products.push_back(std::move(product)); // dodawanie zrobionego produktu do wektora zrobionych w CoasterPager
+            collected_products.at(order_id).push_back(std::move(product)); // dodawanie zrobionego produktu do wektora zrobionych w CoasterPager
+            std::cout << "ready_products_size: " << collected_products.at(order_id).size() << std::endl;
+            std::cout << "products_size: " << orders.at(order_id).size() << std::endl;
             // jeżeli jesteśmy ostatnim dodanych produktem do zamówienia
-            if(pager->ready_products.size() >= pager->products.size()) {
+            if(collected_products.at(order_id).size() >= orders.at(order_id).size()) {
+                std::cout << "GOTOWY" << std::endl;
                 waiting_pager.at(order_id)->unlock();
+                std::cout << "AFTER GOTOWY" << std::endl;
             }
             pager_access.unlock();
         }
-        */
+        
     }

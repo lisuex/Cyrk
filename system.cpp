@@ -39,7 +39,8 @@
         act_id(0),
         menu({}),
         machines_queues({}),
-        worker_waiting(0) {
+        worker_waiting(0),
+        was_shutdown(false) {
             // tworzenie stałych wątków dla workerów
             for(int i = 0; i < (int)numberOfWorkers; i++) {
                 worker_threads.insert({i,std::thread{&System::worker_function, this}});
@@ -66,29 +67,35 @@
 
     std::unique_ptr<CoasterPager> System::order(std::vector<std::string> products) {
         order_mutex.lock(); // początek składania zamówienia
-        act_id++;
+        if(was_shutdown) throw RestaurantClosedException();
+        else {
+            act_id++;
 
-        worker_mutex.lock();
+            worker_mutex.lock();
 
-        pending_orders.push_back(act_id);
-        waiting_pager.insert(std::make_pair(act_id, std::unique_ptr<std::mutex>(new std::mutex())));
-        waiting_pager.at(act_id)->lock();
-        std::unique_ptr<CoasterPager> pager_ptr = std::unique_ptr<CoasterPager>(new CoasterPager(act_id, this));
+            pending_orders.push_back(act_id);
+            waiting_pager.insert(std::make_pair(act_id, std::unique_ptr<std::mutex>(new std::mutex())));
+            waiting_pager.at(act_id)->lock();
+            std::unique_ptr<CoasterPager> pager_ptr = std::unique_ptr<CoasterPager>(new CoasterPager(act_id, this));
 
-        orders.insert({act_id, products});
-        collected_products.insert({act_id, std::vector<std::unique_ptr<Product>>{}});
+            orders.insert({act_id, products});
+            collected_products.insert({act_id, std::vector<std::unique_ptr<Product>>{}});
 
-        if(worker_waiting > 0) {
-            take_order.notify_one();
+            if(worker_waiting > 0) {
+                take_order.notify_one();
+            }
+            worker_mutex.unlock();
+
+            return pager_ptr;
         }
-        worker_mutex.unlock();
-
-        return pager_ptr;
     }
 
     std::vector<std::unique_ptr<Product>> System::collectOrder(std::unique_ptr<CoasterPager> CoasterPager) {
-        waiting_pager.at(CoasterPager->order_id)->lock();
-        return std::move(collected_products.at(CoasterPager->order_id));
+        if(was_shutdown) throw FulfillmentFailure();
+        else {
+            waiting_pager.at(CoasterPager->order_id)->lock();
+            return std::move(collected_products.at(CoasterPager->order_id));
+        }
     }
 
     unsigned int System::getClientTimeout() const {

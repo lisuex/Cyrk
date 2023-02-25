@@ -79,6 +79,11 @@ public:
     System(machines_t machines, unsigned int numberOfWorkers, unsigned int clientTimeout);
 
     std::vector<WorkerReport> shutdown() {
+        for(auto machine: machines_map) {
+            machine.second->stop();
+        }
+        was_shutdown = true;
+
         return {};
     }
 
@@ -110,7 +115,6 @@ private:
     std::unordered_map<unsigned int, std::thread> worker_threads; // mapa z (id_workera, worker_thread)
     std::unordered_map<std::string, std::thread> machines_threads; // mapa z (nazwa_maszyny, worker_thread)
 
-    std::mutex pager_access; // mutex do dostępu do pagera żeby wiele maszyn naraz nie dodawało rzeczy do "zrobionych" w pagerze
     std::unordered_map<std::string, std::unique_ptr<std::condition_variable>> machines_signal_map; // mapa z condition variable dla maszyn
     std::mutex singal_mutex; // mutex dla mapy powyżej
     std::unordered_map<std::string, bool> machines_waiting;
@@ -125,6 +129,8 @@ private:
     std::condition_variable take_order; // zmienna warunkowa sygnalizująca robotników, że jest jakieś zamówienie do przetworzenia
     std::mutex worker_mutex; // mutex na sprawdzanie pending_orders
     std::vector<unsigned int> pending_orders; // wektor oczekujących numerów zamówień
+
+    volatile bool was_shutdown;
 };
 
 

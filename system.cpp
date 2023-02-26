@@ -16,12 +16,14 @@
 #include "machine.hpp"
 
     void CoasterPager::wait() const {
-        sleep(1);
+        system->waiting_pager.at(order_id)->lock();
+        system->waiting_pager.at(order_id)->unlock();
     }
 
     void CoasterPager::wait(unsigned int timeout) const {
-        // cokolwiek by nie był unused
-        std::cout << timeout;
+        auto now = std::chrono::steady_clock::now();
+        system->waiting_pager.at(order_id)->try_lock_until(now + std::chrono::milliseconds(timeout));
+        system->waiting_pager.at(order_id)->unlock();
     }
 
     [[nodiscard]] unsigned int CoasterPager::getId() const {
@@ -70,12 +72,14 @@
         if(was_shutdown) throw RestaurantClosedException();
         else {
             act_id++;
+            broken.insert({act_id, false});
 
             worker_mutex.lock();
 
             pending_orders.push_back(act_id);
-            waiting_pager.insert(std::make_pair(act_id, std::unique_ptr<std::mutex>(new std::mutex())));
+            waiting_pager.insert(std::make_pair(act_id, std::unique_ptr<std::timed_mutex>(new std::timed_mutex())));
             waiting_pager.at(act_id)->lock();
+
             std::unique_ptr<CoasterPager> pager_ptr = std::unique_ptr<CoasterPager>(new CoasterPager(act_id, this));
 
             orders.insert({act_id, products});
@@ -91,7 +95,7 @@
     }
 
     std::vector<std::unique_ptr<Product>> System::collectOrder(std::unique_ptr<CoasterPager> CoasterPager) {
-        if(was_shutdown) throw FulfillmentFailure();
+        if(was_shutdown || broken.at(CoasterPager->order_id)) throw FulfillmentFailure();
         else {
             waiting_pager.at(CoasterPager->order_id)->lock();
             return std::move(collected_products.at(CoasterPager->order_id));
@@ -152,13 +156,18 @@
             machine_mutex.unlock();
             
             // skoro ma klienta to pobiera zamówienie
-            std::unique_ptr<Product> product = machine->getProduct();
-
-            collected_products.at(order_id).push_back(std::move(product)); // dodawanie zrobionego produktu do wektora zrobionych w CoasterPager
-            // jeżeli jesteśmy ostatnim dodanych produktem do zamówienia
-            if(collected_products.at(order_id).size() >= orders.at(order_id).size()) {
+            try {
+                std::unique_ptr<Product> product = machine->getProduct();
+                collected_products.at(order_id).push_back(std::move(product)); // dodawanie zrobionego produktu do wektora zrobionych w CoasterPager
+                // jeżeli jesteśmy ostatnim dodanych produktem do zamówienia
+                if(collected_products.at(order_id).size() >= orders.at(order_id).size()) {
+                    waiting_pager.at(order_id)->unlock();
+                }
+            } catch(const MachineFailure& e) {
+                broken.at(order_id) = true;
                 waiting_pager.at(order_id)->unlock();
             }
+            
         }
         
     }

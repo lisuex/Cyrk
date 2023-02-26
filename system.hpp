@@ -123,8 +123,9 @@ private:
 
     std::unordered_map<unsigned int, std::vector<std::string> > orders;
     std::unordered_map<unsigned int, std::vector<std::unique_ptr<Product>> > collected_products;
+    std::unordered_map<unsigned int, bool> broken;
     
-    std::unordered_map<unsigned int, std::unique_ptr<std::mutex>> waiting_pager; // mapa z mutexem na którym czeka wait w CoasterPager
+    std::unordered_map<unsigned int, std::unique_ptr<std::timed_mutex>> waiting_pager; // mapa z mutexem na którym czeka wait w CoasterPager
     unsigned int worker_waiting;
     std::condition_variable take_order; // zmienna warunkowa sygnalizująca robotników, że jest jakieś zamówienie do przetworzenia
     std::mutex worker_mutex; // mutex na sprawdzanie pending_orders
